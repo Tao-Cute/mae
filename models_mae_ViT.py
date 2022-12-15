@@ -14,69 +14,78 @@ from functools import partial
 import torch
 import torch.nn as nn
 
-import math
-from timm.models.layers import DropPath, trunc_normal_, to_2tuple, Mlp
-from fan import HybridEmbed, TokenMixing
-from util.pos_embed import get_2d_sincos_pos_embed
+
+from timm.models.layers import DropPath, to_2tuple
+from timm.models.vision_transformer import PatchEmbed, Attention, Mlp, DropPath
+from fan import TokenMixing
 from convnext_utils import _create_hybrid_backbone
-from timm.models.vision_transformer import PatchEmbed
+from util.pos_embed import get_2d_sincos_pos_embed
+
+class HybridEmbed(nn.Module):
+    """ CNN Feature Map Embedding
+    Extract feature map from CNN, flatten, project to embedding dim.
+    """
+    def __init__(self, backbone, img_size=224, patch_size=2, feature_size=None, in_chans=3, embed_dim=384):
+        super().__init__()
+        assert isinstance(backbone, nn.Module)
+        img_size = to_2tuple(img_size)
+        patch_size_undown = to_2tuple(patch_size * 8)
+        patch_size = to_2tuple(patch_size)
+        self.img_size = img_size
+        self.patch_size_downsample = patch_size
+        self.patch_size = patch_size_undown
+        self.backbone = backbone
+        if feature_size is None:
+            with torch.no_grad():
+                # NOTE Most reliable way of determining output dims is to run forward pass
+                training = backbone.training
+                if training:
+                    backbone.eval()
+                o = self.backbone.forward_features(torch.zeros(1, in_chans, img_size[0], img_size[1]))
+                if isinstance(o, (list, tuple)):
+                    o = o[-1]  # last feature if backbone outputs list/tuple of features
+                feature_size = o.shape[-2:]
+                feature_dim = o.shape[1]
+                backbone.train(training)
+        else:
+            feature_size = to_2tuple(feature_size)
+            if hasattr(self.backbone, 'feature_info'):
+                feature_dim = self.backbone.feature_info.channels()[-1]
+            else:
+                feature_dim = self.backbone.num_features
+        assert feature_size[0] % patch_size[0] == 0 and feature_size[1] % patch_size[1] == 0
+        self.grid_size = (feature_size[0] // patch_size[0], feature_size[1] // patch_size[1])
+        self.num_patches = self.grid_size[0] * self.grid_size[1]
+        self.proj = nn.Conv2d(feature_dim, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+    def forward(self, x, return_feat=False):
+        x, out_list = self.backbone.forward_features(x, return_feat=return_feat)
+        B, C, H, W = x.shape
+        if isinstance(x, (list, tuple)):
+            x = x[-1]  # last feature if backbone outputs list/tuple of features
+        x = self.proj(x).flatten(2).transpose(1, 2)
+        if return_feat:
+            return x , (H//self.patch_size_downsample[0], W//self.patch_size_downsample[1]), out_list
+        else:
+            return x , (H//self.patch_size_downsample[0], W//self.patch_size_downsample[1])
 
 class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0., 
-                 drop_path=0., norm_layer=nn.LayerNorm, eta=1.):
+
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = TokenMixing(dim, num_heads=num_heads, qkv_bias=qkv_bias,attn_drop=attn_drop, proj_drop=drop)
+        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
         self.norm2 = norm_layer(dim)
-        self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), drop=drop)
-
-        self.gamma1 = nn.Parameter(eta * torch.ones(dim), requires_grad=True)
-        self.gamma2 = nn.Parameter(eta * torch.ones(dim), requires_grad=True)
-        
-        self.H = None
-        self.W = None
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x):
-        H, W = self.H, self.W
-        x_new, _ = self.attn(self.norm1(x))
-        x = x + self.drop_path(self.gamma1 * x_new)
-        x_new = self.mlp(self.norm2(x))
-        x = x + self.drop_path(self.gamma2 * x_new)
-        self.H, self.W = H, W
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
-
-class PositionalEncodingFourier(nn.Module):
-    """
-    Positional encoding relying on a fourier kernel matching the one used in the "Attention is all of Need" paper.
-    """
-
-    def __init__(self, hidden_dim=32, dim=768, temperature=10000):
-        super().__init__()
-        self.token_projection = nn.Conv2d(hidden_dim * 2, dim, kernel_size=1)
-        self.scale = 2 * math.pi
-        self.temperature = temperature
-        self.hidden_dim = hidden_dim
-        self.dim = dim
-        self.eps = 1e-6
-
-    def forward(self, B: int, H: int, W: int, fp32=True):
-        device = self.token_projection.weight.device
-        y_embed = torch.arange(1, H+1, dtype=torch.float32 if fp32 else torch.float16, device=device).unsqueeze(1).repeat(1, 1, W)
-        x_embed = torch.arange(1, W+1, dtype=torch.float32 if fp32 else torch.float16, device=device).repeat(1, H, 1)
-        y_embed = y_embed / (y_embed[:, -1:, :] + self.eps) * self.scale
-        x_embed = x_embed / (x_embed[:, :, -1:] + self.eps) * self.scale
-        dim_t = torch.arange(self.hidden_dim, dtype=torch.float32 if fp32 else torch.float16, device=device)
-        dim_t = self.temperature ** (2 * torch.div(dim_t, 2) / self.hidden_dim)
-        pos_x = x_embed[:, :, :, None] / dim_t
-        pos_y = y_embed[:, :, :, None] / dim_t
-        pos_x = torch.stack([pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()], dim=4).flatten(3)
-        pos_y = torch.stack([pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()], dim=4).flatten(3)
-        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
-        pos = self.token_projection(pos)
-        return pos.repeat(B, 1, 1, 1)
-
 
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
@@ -84,22 +93,24 @@ class MaskedAutoencoderViT(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, backbone=None, use_hybrid=True, drop_path_rate=0.3):
+                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, patch_embed="patch_embed"):
         super().__init__()
 
         # --------------------------------------------------------------------------
         # MAE encoder specifics
-        if use_hybrid:
-            self.patch_embed = self.patch_embed = HybridEmbed(backbone=backbone, patch_size=2, embed_dim=embed_dim)
-        else:
+        if patch_embed == "pathch_embed":
             self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
+        elif patch_embed == "ConvNext":
+            model_args = dict(depths=[3, 3], dims=[128, 256, 512, 1024], use_head=False)
+            backbone = _create_hybrid_backbone(pretrained=False, pretrained_strict=False, **model_args)
+            self.patch_embed = HybridEmbed(backbone=backbone, patch_size=2, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, drop_path=drop_path_rate)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         # --------------------------------------------------------------------------
@@ -113,7 +124,7 @@ class MaskedAutoencoderViT(nn.Module):
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
@@ -211,7 +222,11 @@ class MaskedAutoencoderViT(nn.Module):
 
     def forward_encoder(self, x, mask_ratio):
         # embed patches
-        x, (Hp, Wp), out_list = self.patch_embed(x, return_feat=True)
+        if isinstance(self.patch_embed, HybridEmbed):
+            x, (Hp, Wp), outputs = self.patch_embed(x, return_feat=True)
+        else:
+            x = self.patch_embed(x)
+
         # add pos embed w/o cls token
         x = x + self.pos_embed[:, 1:, :]
 
@@ -222,6 +237,7 @@ class MaskedAutoencoderViT(nn.Module):
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
+
         # apply Transformer blocks
         for blk in self.blocks:
             x = blk(x)
@@ -304,16 +320,36 @@ def mae_vit_huge_patch14_dec512d8b(**kwargs):
     return model
 
 
+
+def mae_vit_base_patch16ConvNext_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),patch_embed="ConvNext", **kwargs)
+    return model
+
+
+def mae_vit_large_patch16ConvNext_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", **kwargs)
+    return model
+
+
+def mae_vit_huge_patch14ConvNext_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=14, embed_dim=1280, depth=32, num_heads=16,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", **kwargs)
+    return model
+
+
 # set recommended archs
 mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
 
-
-if __name__ == "__main__":
-    model_args = dict(depths=[3, 5], dims=[128, 256, 512, 1024], use_head=False)
-    backbone = _create_hybrid_backbone(pretrained=False, pretrained_strict=False, **model_args)
-    model = MaskedAutoencoderViT(embed_dim=448, depth=16, backbone=backbone)
-    x = torch.randn(3, 3, 224, 224)
-    from IPython import embed; embed()
-
+mae_vitConvNext_base_patch16 = mae_vit_base_patch16ConvNext_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vitConvNext_large_patch16 = mae_vit_large_patch16ConvNext_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vitConvNext_huge_patch14 = mae_vit_huge_patch14ConvNext_dec512d8b  # decoder: 512 dim, 8 blocks

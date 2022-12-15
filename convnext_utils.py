@@ -31,6 +31,7 @@
 # -------------------------------------------------------------------------
 from collections import OrderedDict
 from functools import partial
+from timm.models.helpers import named_apply, build_model_with_cfg
 
 import torch
 import torch.nn as nn
@@ -38,7 +39,7 @@ import torch.nn.functional as F
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.fx_features import register_notrace_module
-from timm.models.helpers import named_apply, build_model_with_cfg
+from timm.models.helpers import named_apply
 from timm.models.layers import trunc_normal_, ClassifierHead, SelectAdaptivePool2d, DropPath, Mlp
 from timm.models.registry import register_model
 
@@ -74,7 +75,6 @@ default_cfgs = dict(
     convnext_xlarge_in22k=_cfg(
         url="https://dl.fbaipublicfiles.com/convnext/convnext_xlarge_22k_224.pth", num_classes=80),
 )
-
 
 def _is_contiguous(tensor: torch.Tensor) -> bool:
     # jit is oh so lovely :/
@@ -354,7 +354,7 @@ def checkpoint_filter_fn(state_dict, model):
 def _create_hybrid_backbone(variant='convnext_base_in22k', pretrained=False, **kwargs):
     model = build_model_with_cfg(
         ConvNeXt, variant, pretrained,
-        # default_cfg=default_cfgs[variant],
+        default_cfg=default_cfgs[variant],
         pretrained_filter_fn=checkpoint_filter_fn,
         feature_cfg=dict(out_indices=(0, 1, 2, 3), flatten_sequential=True),
         **kwargs)
