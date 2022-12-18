@@ -17,8 +17,9 @@ import torch.nn as nn
 
 from timm.models.layers import DropPath, to_2tuple
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp, DropPath
-from fan import TokenMixing
+from fan import TokenMixing, ChannelProcessing
 from convnext_utils import _create_hybrid_backbone
+from block import Block
 from util.pos_embed import get_2d_sincos_pos_embed
 
 class HybridEmbed(nn.Module):
@@ -69,31 +70,13 @@ class HybridEmbed(nn.Module):
         else:
             return x , (H//self.patch_size_downsample[0], W//self.patch_size_downsample[1])
 
-class Block(nn.Module):
-
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
-        super().__init__()
-        self.norm1 = norm_layer(dim)
-        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
-
-    def forward(self, x):
-        x = x + self.drop_path(self.attn(self.norm1(x)))
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
-
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, patch_embed="patch_embed"):
+                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, patch_embed="patch_embed", channel_process="mlp", mlp="fc"):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -105,12 +88,13 @@ class MaskedAutoencoderViT(nn.Module):
             backbone = _create_hybrid_backbone(pretrained=False, pretrained_strict=False, **model_args)
             self.patch_embed = HybridEmbed(backbone=backbone, patch_size=2, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
+        self.channel_process = channel_process
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer, channel_process=channel_process, mlp=mlp)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         # --------------------------------------------------------------------------
@@ -239,8 +223,14 @@ class MaskedAutoencoderViT(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
 
         # apply Transformer blocks
-        for blk in self.blocks:
-            x = blk(x)
+        if self.channel_process == "cp":
+            for blk in self.blocks:
+                blk.H, blk.W = Hp, Wp
+                x = blk(x)
+                Hp, Wp = blk.H, blk.W
+        else:
+            for blk in self.blocks:
+                x = blk(x)
         x = self.norm(x)
 
         return x, mask, ids_restore
@@ -341,8 +331,54 @@ def mae_vit_huge_patch14ConvNext_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT(
         patch_size=14, embed_dim=1280, depth=32, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", **kwargs)
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", **kwargs)
     return model
+
+def mae_vit_base_patch16ConvNextCPFc_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),patch_embed="ConvNext", channel_process="cp", **kwargs)
+    return model
+
+
+def mae_vit_large_patch16ConvNextCPFc_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", **kwargs)
+    return model
+
+
+def mae_vit_huge_patch14ConvNextCPFc_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=14, embed_dim=1280, depth=32, num_heads=16,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", **kwargs)
+    return model
+
+# def mae_vit_base_patch16ConvNextCPConv_dec512d8b(**kwargs):
+#     model = MaskedAutoencoderViT(
+#         patch_size=16, embed_dim=768, depth=12, num_heads=12,
+#         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+#         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
+#     return model
+
+
+# def mae_vit_large_patch16ConvNextCPConv_dec512d8b(**kwargs):
+#     model = MaskedAutoencoderViT(
+#         patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+#         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+#         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
+#     return model
+
+
+# def mae_vit_huge_patch14ConvNextCPConv_dec512d8b(**kwargs):
+#     model = MaskedAutoencoderViT(
+#         patch_size=14, embed_dim=1280, depth=32, num_heads=16,
+#         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+#         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
+#     return model
 
 
 # set recommended archs
@@ -353,3 +389,11 @@ mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blo
 mae_vitConvNext_base_patch16 = mae_vit_base_patch16ConvNext_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vitConvNext_large_patch16 = mae_vit_large_patch16ConvNext_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vitConvNext_huge_patch14 = mae_vit_huge_patch14ConvNext_dec512d8b  # decoder: 512 dim, 8 blocks
+
+mae_vitConvNextCPFc_base_patch16 = mae_vit_base_patch16ConvNextCPFc_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vitConvNextCPFc_large_patch16 = mae_vit_large_patch16ConvNextCPFc_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vitConvNextCPFc_huge_patch14 = mae_vit_huge_patch14ConvNextCPFc_dec512d8b  # decoder: 512 dim, 8 blocks
+
+# mae_vitConvNextCPConv_base_patch16 = mae_vit_base_patch16ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
+# mae_vitConvNextCPConv_large_patch16 = mae_vit_large_patch16ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
+# mae_vitConvNextCPConv_huge_patch14 = mae_vit_huge_patch14ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks

@@ -42,7 +42,6 @@ default_cfgs = {
 
 }
 
-
 class PositionalEncodingFourier(nn.Module):
     """
     Positional encoding relying on a fourier kernel matching the one used in the "Attention is all of Need" paper.
@@ -592,7 +591,6 @@ class FAN(Backbone):
             Hp, Wp = blk.H, blk.W
 
             if idx in out_index and isinstance(self.patch_embed, HybridEmbed):
-                embed()
                 outs.append(x.reshape(B, Hp, Wp, -1).permute(0, 3, 1, 2).contiguous())
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
