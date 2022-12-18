@@ -27,14 +27,13 @@ class ConvMlp(nn.Module):
         self.fc2 = nn.Conv2d(hidden_features, out_features, kernel_size=1, bias=bias[1])
 
     def forward(self, x):
-        from IPython import embed; embed()
-        x = x.permute(0, 3, 1, 2)
+        x = x.permute(2, 1, 0)
         x = self.fc1(x)
         x = self.norm(x)
         x = self.act(x)
         x = self.drop(x)
         x = self.fc2(x)
-        x = x.permute(0, 2, 3, 1)
+        x = x.permute(1, 2 ,0)
         return x
 
 class ChannelProcessing(nn.Module):
@@ -53,6 +52,8 @@ class ChannelProcessing(nn.Module):
 
         if mlp == "fc":
             self.mlp_v = Mlp(in_features=dim//self.cha_sr_ratio, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        if mlp == "conv":
+            self.mlp_v = ConvMlp(in_features=dim//self.cha_sr_ratio, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
         self.norm_v = norm_layer(dim//self.cha_sr_ratio)
 
         self.q = nn.Linear(dim, dim, bias=qkv_bias)

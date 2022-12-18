@@ -357,28 +357,28 @@ def mae_vit_huge_patch14ConvNextCPFc_dec512d8b(**kwargs):
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", **kwargs)
     return model
 
-# def mae_vit_base_patch16ConvNextCPConv_dec512d8b(**kwargs):
-#     model = MaskedAutoencoderViT(
-#         patch_size=16, embed_dim=768, depth=12, num_heads=12,
-#         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-#         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
-#     return model
+def mae_vit_base_patch16ConvNextCPConv_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
+    return model
 
 
-# def mae_vit_large_patch16ConvNextCPConv_dec512d8b(**kwargs):
-#     model = MaskedAutoencoderViT(
-#         patch_size=16, embed_dim=1024, depth=24, num_heads=16,
-#         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-#         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
-#     return model
+def mae_vit_large_patch16ConvNextCPConv_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
+    return model
 
 
-# def mae_vit_huge_patch14ConvNextCPConv_dec512d8b(**kwargs):
-#     model = MaskedAutoencoderViT(
-#         patch_size=14, embed_dim=1280, depth=32, num_heads=16,
-#         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-#         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
-#     return model
+def mae_vit_huge_patch14ConvNextCPConv_dec512d8b(**kwargs):
+    model = MaskedAutoencoderViT(
+        patch_size=14, embed_dim=1280, depth=32, num_heads=16,
+        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), patch_embed="ConvNext", channel_process="cp", mlp="conv", **kwargs)
+    return model
 
 
 # set recommended archs
@@ -394,6 +394,6 @@ mae_vitConvNextCPFc_base_patch16 = mae_vit_base_patch16ConvNextCPFc_dec512d8b  #
 mae_vitConvNextCPFc_large_patch16 = mae_vit_large_patch16ConvNextCPFc_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vitConvNextCPFc_huge_patch14 = mae_vit_huge_patch14ConvNextCPFc_dec512d8b  # decoder: 512 dim, 8 blocks
 
-# mae_vitConvNextCPConv_base_patch16 = mae_vit_base_patch16ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
-# mae_vitConvNextCPConv_large_patch16 = mae_vit_large_patch16ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
-# mae_vitConvNextCPConv_huge_patch14 = mae_vit_huge_patch14ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vitConvNextCPConv_base_patch16 = mae_vit_base_patch16ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vitConvNextCPConv_large_patch16 = mae_vit_large_patch16ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
+mae_vitConvNextCPConv_huge_patch14 = mae_vit_huge_patch14ConvNextCPConv_dec512d8b  # decoder: 512 dim, 8 blocks
